@@ -1,4 +1,4 @@
-//===- PrintFunctionNames.cpp ---------------------------------------------===//
+//===- FindUninstantiatedTemplates.cpp ------------------------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -7,29 +7,53 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Example clang plugin which simply prints the names of all the top-level decls
-// in the input file.
+// Example clang plugin which prints the names of all uninstantiated functions
+// and member functions together with their source position.
 //
 //===----------------------------------------------------------------------===//
 
 #include "clang/Frontend/FrontendPluginRegistry.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/AST.h"
+#include "clang/AST/ASTContext.h"
+#include "clang/AST/RecursiveASTVisitor.h"
+#include "clang/AST/Decl.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "llvm/Support/raw_ostream.h"
 using namespace clang;
 
 namespace {
 
-class PrintFunctionsConsumer : public ASTConsumer {
+class FindUninstantiatedTemplatesConsumer : public ASTConsumer,
+                                            public RecursiveASTVisitor<FindUninstantiatedTemplatesConsumer> {
 public:
-  virtual bool HandleTopLevelDecl(DeclGroupRef DG) {
-    for (DeclGroupRef::iterator i = DG.begin(), e = DG.end(); i != e; ++i) {
-      const Decl *D = *i;
-      if (const NamedDecl *ND = dyn_cast<NamedDecl>(D))
-        llvm::errs() << "top-level-decl: \"" << ND->getNameAsString() << "\"\n";
-    }
+  ASTContext * ctx;
+  
+  FindUninstantiatedTemplatesConsumer() : ctx(0) {
+  }
 
+  virtual void HandleTranslationUnit(ASTContext & Ctx) {
+    ctx = &Ctx;
+    TraverseDecl(Ctx.getTranslationUnitDecl());
+  }
+  
+  bool VisitDecl(Decl * decl) {
+    if (!isa<FunctionTemplateDecl>(*decl))
+      return true;  // We only want template (member) functions.
+
+    // Downcast ftDecl.
+    FunctionTemplateDecl * ftDecl = dyn_cast<FunctionTemplateDecl>(decl);
+    
+    if (ftDecl->spec_begin() != ftDecl->spec_end())
+      return true;  // We look for function template declarations *without* specializations.
+  
+    if (!ftDecl->isThisDeclarationADefinition())
+        return true;  // Ignore if this function template declaration is not a definition.
+
+    llvm::errs() << "Uninstantiated template: ";
+    ftDecl->getSourceRange().getBegin().print(llvm::errs(), ctx->getSourceManager());
+    llvm::errs() << "\n";
+    
     return true;
   }
 };
@@ -37,7 +61,7 @@ public:
 class FindUninstantiatedTemplatesAction : public PluginASTAction {
 protected:
   ASTConsumer *CreateASTConsumer(CompilerInstance &CI, llvm::StringRef) {
-    return new PrintFunctionsConsumer();
+    return new FindUninstantiatedTemplatesConsumer();
   }
 
   bool ParseArgs(const CompilerInstance &CI,
